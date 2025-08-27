@@ -1,0 +1,12 @@
+Flask
+flask-cors
+requests
+pydicom
+nibabel
+numpy
+requests-toolbelt
+tqdm
+trimesh
+pynrrd
+matplotlib
+scikit-image
