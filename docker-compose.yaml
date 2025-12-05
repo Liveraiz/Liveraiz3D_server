@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  dicom-server:
+    build: .
+    ports:
+      - "5051:5051"
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped

@@ -1,10 +1,8 @@
 import os
 import sys
 import time
-import uuid
 import glob
 import json
-import gzip
 import zipfile
 import logging
 import tempfile  
@@ -52,22 +50,23 @@ def after_request(response):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads", "dicom")
 
-
-
 # 로그 설정 (애플리케이션 시작 시 한 번만)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 import SimpleITK as sitk
 from scipy.ndimage import binary_fill_holes
 
-
-
-
 @app.route("/", methods=["GET"])
 def index():
     return {"status": "running", "message": "Flask server is up!"}
 
+# INFERENCE_SERVER_URL = "http://localhost:8000/infer/hcc_mr20min_nnunet/"
 
+# Liver CT
+# INFERENCE_SERVER_URL = "http://localhost:8000/infer/liver_5sect_nnunet/"
+INFERENCE_SERVER_URL = os.getenv(
+    "INFERENCE_SERVER_URL", "https://smc-ssiso-ai.ngrok.app/infer/liver_5sect_nnunet/"
+)
 
 
 # @app.route('/convert-mesh', methods=['OPTIONS', 'POST'])
@@ -464,12 +463,6 @@ def generate_mesh():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-
-
-
-
-
-
 @app.route("/infer-dicom-bundle", methods=["POST"])
 def infer_dicom_bundle():
     start_time = time.time()
@@ -525,10 +518,10 @@ def infer_dicom_bundle():
             try:
                 logging.info("📡 SMC 서버로 추론 요청 시작")
                 smc_res = requests.post(
-                    "https://smc-ssiso-ai.ngrok.app/infer/hcc-pv/?output_format=.nrrd",
+                    INFERENCE_SERVER_URL + "?output_format=.nrrd",
                     data=monitor,
                     headers=headers,
-                    timeout=(30, 300),
+                    timeout=(30, 600),
                 )
                 elapsed = round(time.time() - start_time, 2)
 
@@ -831,15 +824,6 @@ def inspect_nifti():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 400
 
-
-
-
-
-
-
-
-
-
 def convert_lps_to_ras(direction: np.ndarray, origin: np.ndarray):
     """
     DICOM LPS 좌표계를 RAS 좌표계로 변환.
@@ -855,14 +839,6 @@ def convert_lps_to_ras(direction: np.ndarray, origin: np.ndarray):
     origin_ras[1] *= -1
 
     return direction_ras, origin_ras
-
-
-
-
-
-
-
-
 
 @app.route("/upload-dicom", methods=["POST"])
 def upload_dicom():
@@ -1053,7 +1029,7 @@ def send_large_file_with_progress(nii_path):
 
     response = requests.post(
         # "https://smc-ssiso-ai.ngrok.app/nifti-to-nrrd",
-        "https://smc-ssiso-ai.ngrok.app/infer/hcc-pv/?output_format=.nrrd",
+        INFERENCE_SERVER_URL + "?output_format=.nrrd",
         data=monitor,
         headers=headers,
         timeout=(30, 300),
@@ -1353,7 +1329,7 @@ def send_to_smc(nii_path):
     headers = {"Content-Type": monitor.content_type}
 
     response = requests.post(
-        "https://smc-ssiso-ai.ngrok.app/infer/hcc-pv/?output_format=.nrrd",
+        INFERENCE_SERVER_URL + "?output_format=.nrrd",
         data=monitor,
         headers=headers,
         timeout=(30, 300),

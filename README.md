@@ -32,3 +32,36 @@ python app.py
 
 ## ./run.sh 실행
 ./run.sh
+
+# Docker registry
+495599733399.dkr.ecr.ap-northeast-2.amazonaws.com/isw-server
+
+## Role 생성
+```bash
+# 예시: App Runner용 ECR 읽기 롤 생성
+aws iam create-role --role-name AppRunnerECRAccessRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow","Principal": {"Service": "build.apprunner.amazonaws.com"},"Action": "sts:AssumeRole"}]
+  }'
+
+aws iam attach-role-policy --role-name AppRunnerECRAccessRole \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+```
+
+## App Runner
+```bash
+export AWS_REGION=ap-northeast-2
+export ACCOUNT_ID=495599733399
+export IMAGE_URI=495599733399.dkr.ecr.ap-northeast-2.amazonaws.com/isw-server:latest
+export SERVICE_NAME=isw-server
+export SERVICE_ROLE_ARN=arn:aws:iam::495599733399:role/AppRunnerECRAccessRole
+export ACCESS_ROLE_ARN=arn:aws:iam::${ACCOUNT_ID}:role/AppRunnerECRAccessRole
+
+aws apprunner create-service \
+  --region "$AWS_REGION" \
+  --service-name "$SERVICE_NAME" \
+  --source-configuration 'ImageRepository={ImageIdentifier='"$IMAGE_URI"',ImageRepositoryType=ECR,ImageConfiguration={Port=5051}},AuthenticationConfiguration={AccessRoleArn='"$ACCESS_ROLE_ARN"'}' \
+  --instance-configuration "Cpu=1 vCPU,Memory=2 GB" \
+  --profile zerosketch
+  ```

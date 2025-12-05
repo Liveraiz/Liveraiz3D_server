@@ -10,3 +10,4 @@ trimesh
 pynrrd
 matplotlib
 scikit-image
+SimpleITK
