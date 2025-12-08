@@ -325,18 +325,6 @@ def convert_mesh():
         logging.exception("❌ convert-mesh 처리 중 오류 발생")
         return jsonify({"success": False, "message": str(e)}), 500
 
-
-
-
-
-
-
-
-
-
-
-
-
 # @app.route('/convert-mesh', methods=['POST'])
 # def convert_mesh():
 #     # 1. OBJ 파일 받기
