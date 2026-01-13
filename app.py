@@ -3,6 +3,7 @@ import sys
 import time
 import glob
 import json
+import hashlib
 import zipfile
 import logging
 import tempfile  
@@ -23,6 +24,7 @@ from tqdm import tqdm
 import pydicom
 import nibabel as nib
 import nrrd
+import dicom2nifti
 
 # 데이터 처리 & 과학 계산
 import numpy as np
@@ -67,120 +69,6 @@ def index():
 INFERENCE_SERVER_URL = os.getenv(
     "INFERENCE_SERVER_URL", "https://smc-ssiso-ai.ngrok.app/infer/liver_5sect_nnunet/"
 )
-
-
-# @app.route('/convert-mesh', methods=['OPTIONS', 'POST'])
-# def convert_mesh():
-#     import scipy.ndimage as ndi
-#     try:
-#         label_id = int(request.form.get("label", 1))
-#         original_mesh_file = request.files.get("original_mesh")
-#         edited_mesh_file = request.files.get("edited_mesh")
-#         nrrd_file = request.files.get("nrrd_file")
-
-#         logging.info("===== [convert-mesh 요청 수신] =====")
-#         logging.info(f"▶ 라벨 ID: {label_id}")
-#         logging.info(f"▶ original_mesh 파일: {original_mesh_file.filename}")
-#         logging.info(f"▶ edited_mesh 파일: {edited_mesh_file.filename}")
-#         n_bytes = len(nrrd_file.read())
-#         logging.info(f"▶ NRRD 파일 크기: {n_bytes} bytes")
-
-#         nrrd_file.seek(0)
-#         with tempfile.NamedTemporaryFile(delete=False, suffix=".nrrd") as tmp:
-#             tmp.write(nrrd_file.read())
-#             tmp_path = tmp.name
-
-#         seg_image = sitk.ReadImage(tmp_path)
-#         seg_data = sitk.GetArrayFromImage(seg_image)  # (Z, Y, X)
-#         size = seg_image.GetSize()  # (X,Y,Z)
-#         origin = np.array(seg_image.GetOrigin())
-#         spacing = np.array(seg_image.GetSpacing())
-#         direction = np.array(seg_image.GetDirection()).reshape(3, 3)
-#         inv_direction = np.linalg.inv(direction)
-
-#         logging.info("===== [NRRD 메타데이터] =====")
-#         logging.info(f"Shape (Z,Y,X): {seg_data.shape}")
-#         logging.info(f"Origin (mm): {origin}")
-#         logging.info(f"Spacing: {spacing}")
-#         logging.info(f"Direction:\n{direction}")
-
-#         # === 편집 메쉬 로드 (obj) ===
-#         edited_mesh = trimesh.load(edited_mesh_file, file_type='obj')
-#         verts_edited = np.array(edited_mesh.vertices)
-#         faces_edited = np.array(edited_mesh.faces)
-#         verts_edited[:, 0] *= -1
-#         verts_edited = verts_edited[:, [0, 2, 1]]
-#         logging.info(f"[편집 메시] min(mm): {verts_edited.min(0)}, max(mm): {verts_edited.max(0)}, center(mm): {verts_edited.mean(0)}")
-#         edited_trimesh = trimesh.Trimesh(vertices=verts_edited, faces=faces_edited, process=True)
-#         pitch = float(np.min(spacing)) * 0.8  # 더 촘촘하게
-
-#         # === Voxelize mesh ===
-#         vox = edited_trimesh.voxelized(pitch=pitch)
-#         vox_matrix = vox.matrix.astype(np.uint8)
-#         vox_transform = vox.transform  # 4x4 matrix
-#         vox_origin = vox_transform[:3, 3]
-#         logging.info(f"[voxelized] matrix shape: {vox_matrix.shape}, origin (from transform): {vox_origin}")
-#         logging.info(f"[voxelized] bounding box (mm): min {verts_edited.min(0)}, max {verts_edited.max(0)}")
-#         logging.info(f"[NRRD bbox] origin {origin}, end {origin + spacing * (np.array(seg_data.shape)[::-1])}")
-
-#         # === Voxel → NRRD 영역 매핑 ===
-#         mask = np.zeros_like(seg_data, dtype=np.uint8)
-#         n_filled = 0
-#         z_max, y_max, x_max = vox_matrix.shape
-#         idx_debug = []
-#         for z in range(z_max):
-#             for y in range(y_max):
-#                 for x in range(x_max):
-#                     if vox_matrix[z, y, x] > 0:
-#                         pt_vox = np.array([x, y, z, 1])
-#                         pt_mm = (vox_transform @ pt_vox)[:3]   # (mm)
-#                         rel_mm = pt_mm - origin
-#                         idx_xyz = np.dot(inv_direction, rel_mm) / spacing
-#                         idx_zyx = np.round(idx_xyz[::-1]).astype(int)
-#                         if n_filled < 10:
-#                             idx_debug.append((z, y, x, pt_mm.tolist(), idx_zyx.tolist()))
-#                         if (
-#                             0 <= idx_zyx[0] < mask.shape[0] and
-#                             0 <= idx_zyx[1] < mask.shape[1] and
-#                             0 <= idx_zyx[2] < mask.shape[2]
-#                         ):
-#                             mask[idx_zyx[0], idx_zyx[1], idx_zyx[2]] = 1
-#                             n_filled += 1
-#         logging.info(f"[mask] voxelized mask sum: {mask.sum()}, n_filled: {n_filled}")
-#         for i, row in enumerate(idx_debug):
-#             logging.info(f"[debug] voxel({row[0]},{row[1]},{row[2]}) mm={row[3]} → nrrd idx={row[4]}")
-
-#         # 내부 채움 및 보정
-#         mask_filled = ndi.binary_fill_holes(mask).astype(np.uint8)
-#         mask_filled = ndi.binary_closing(mask_filled, iterations=1).astype(np.uint8)  # (optional)
-#         logging.info(f"[mask] filled mask sum: {mask_filled.sum()}")
-
-#         # 기존 라벨 삭제 & 새로 할당
-#         before_count = np.sum(seg_data == label_id)
-#         seg_data[seg_data == label_id] = 0
-#         seg_data[mask_filled > 0] = label_id
-#         after_count = np.sum(seg_data == label_id)
-#         logging.info(f"라벨 {label_id} 교체: 삭제 전 {before_count}, 적용 후 {after_count}")
-
-#         # NRRD 저장
-#         new_image = sitk.GetImageFromArray(seg_data)
-#         new_image.CopyInformation(seg_image)
-
-#         with tempfile.NamedTemporaryFile(delete=False, suffix=".nrrd") as tmp_out:
-#             sitk.WriteImage(new_image, tmp_out.name)
-#             tmp_out.flush()
-#             tmp_out.seek(0)
-#             result_bytes = tmp_out.read()
-
-#         logging.info("===== [변환 완료 → NRRD 반환] =====")
-#         return Response(result_bytes, mimetype='application/octet-stream')
-
-#     except Exception as e:
-#         logging.exception("❌ convert-mesh 처리 중 오류 발생")
-#         return jsonify({"success": False, "message": str(e)}), 500
-
-
-
 
 @app.route('/convert-mesh', methods=['OPTIONS', 'POST'])
 def convert_mesh():
@@ -325,37 +213,6 @@ def convert_mesh():
         logging.exception("❌ convert-mesh 처리 중 오류 발생")
         return jsonify({"success": False, "message": str(e)}), 500
 
-# @app.route('/convert-mesh', methods=['POST'])
-# def convert_mesh():
-#     # 1. OBJ 파일 받기
-#     mesh_file = request.files.get("mesh_file")
-#     if not mesh_file:
-#         return {"error": "mesh_file not provided"}, 400
-
-#     # 2. 옵션 파라미터 받기
-#     dims = request.form.get("dims")
-#     spacing = request.form.get("spacing")
-#     dims = [int(x) for x in dims.strip("[]").split(",")]
-#     spacing = [float(x) for x in spacing.strip("[]").split(",")]
-
-#     # 3. 메시 로드 (trimesh 사용)
-#     mesh = trimesh.load(mesh_file, file_type='obj')
-
-#     # 4. Voxel 변환
-#     volume = mesh.voxelized(pitch=spacing[0])  # pitch=voxel 크기
-#     voxel_matrix = volume.matrix.astype(np.uint8) * 1  # 1/0 mask
-
-#     # 5. NRRD 변환 (pynrrd)
-#     header = {
-#         'space': 'left-posterior-superior',
-#         'space directions': [[spacing[0],0,0],[0,spacing[1],0],[0,0,spacing[2]]],
-#         'kinds': ['domain', 'domain', 'domain']
-#     }
-
-#     with BytesIO() as buf:
-#         nrrd.write(buf, voxel_matrix, header)
-#         buf.seek(0)
-#         return Response(buf.read(), mimetype='application/octet-stream')
 
 @app.route('/generate-mesh', methods=['OPTIONS', 'POST'])
 def generate_mesh():
@@ -483,9 +340,21 @@ def infer_dicom_bundle():
         # 3. 변환 함수 호출
         with tempfile.NamedTemporaryFile(suffix=".nii.gz") as tmpfile:
             try:
-                convert_to_nifti(temp_dcm_dir, tmpfile.name)
-                tmpfile.seek(0)
-                nii_bytes = tmpfile.read()
+                convert_to_nifti_new(temp_dcm_dir, tmpfile.name)
+
+                with open(tmpfile.name, "rb") as f:
+                    nii_bytes = f.read()
+
+                # validate nii_bytes
+                if not nii_bytes or len(nii_bytes) == 0:
+                    raise ValueError("변환된 NIfTI 데이터가 비정상적입니다.")
+
+                logging.info(
+                    "📦 전송 준비 NIfTI: bytes=%.1fKB, md5=%s, gzip_magic=%s",
+                    len(nii_bytes) / 1024,
+                    hashlib.md5(nii_bytes).hexdigest(),
+                    nii_bytes[:2].hex(),
+                )
 
                 # nii_bytes = convert_lps_to_ras_nii(nii_bytes)
 
@@ -542,6 +411,42 @@ def infer_dicom_bundle():
                 elapsed = round(time.time() - start_time, 2)
                 logging.exception("❌ SMC 요청 실패 예외 발생")
                 return jsonify({"success": False, "message": f"SMC 요청 실패: {str(e)}", "elapsed": elapsed}), 500
+
+
+def convert_to_nifti_new(dicom_dir: str, output_path: str):
+    """
+    DICOM 시리즈를 dicom2nifti로 변환해 지정된 경로에 저장.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp_out:
+            dicom2nifti.convert_directory(
+                dicom_dir,
+                tmp_out,
+                compression=True,
+                reorient=True,
+            )
+            candidates = []
+            candidates.extend(glob.glob(os.path.join(tmp_out, "*.nii.gz")))
+            if len(candidates) == 0:
+                raise RuntimeError("dicom2nifti 변환에 실패하였습니다.")
+
+            # if len(candidates) > 1:
+            #     raise RuntimeError("dicom2nifti 변환 결과가 예상과 다릅니다.")
+            result_path = candidates[3]
+
+            result_size = os.path.getsize(result_path)
+            result_img = nib.load(result_path)
+            logging.info(
+                f"📥 dicom2nifti 결과: {result_path}, "
+                f"size={result_size/1024:.1f}KB, "
+                f"shape={result_img.shape}, dtype={result_img.get_data_dtype()}, "
+                f"affine[0]={np.array2string(result_img.affine[0], precision=3)}"
+            )
+            nib.save(result_img, output_path)
+    except Exception:
+        logging.exception("❌ dicom2nifti 변환 실패")
+        raise
 
 
 def convert_to_nifti(dicom_dir: str, output_path: str):
@@ -789,10 +694,6 @@ def convert_nrrd_to_rps(nrrd_bytes):
 
     return out_io.getvalue()
 
-
-
-
-
 @app.route("/inspect-nifti", methods=["POST"])
 def inspect_nifti():
     try:
@@ -939,7 +840,7 @@ def upload_and_infer():
     if not os.path.exists(nii_path):
         try:
             print("DICOM → NIfTI 변환 시작")
-            convert_to_nifti(target_dir, nii_path)
+            convert_to_nifti_new(target_dir, nii_path)
             print("NIfTI 변환 완료:", nii_path)
         except Exception as e:
             print("NIfTI 변환 실패:", str(e))
@@ -1521,19 +1422,6 @@ def save_mesh_from_volume(
         process=False
     )
 
-    # if np.sum(binary_volume) > 3000:
-    #     print(f"[save_mesh_from_volume] smoothing 적용 시작")
-    #     mesh = trimesh.smoothing.filter_laplacian(    
-    #         mesh,
-    #         lamb=0.1,
-    #         iterations=10,
-    #         implicit_time_integration=True,
-    #         volume_constraint=True
-    #     )
-    #     print(f"[save_mesh_from_volume] smoothing 적용 완료")
-    # else:
-    #     print(f"[save_mesh_from_volume] smoothing 적용 안 함 (작은 segment)")
-    # print(f"[save_mesh_from_volume] smoothing 적용 시작")
     mesh = trimesh.smoothing.filter_laplacian(
         mesh,
         lamb=0.1,
@@ -1576,7 +1464,7 @@ def upload_and_infer_all():
     nii_path = os.path.join(target_dir, "converted.nii.gz")
     if not os.path.exists(nii_path):
         t1 = time.time()
-        convert_to_nifti(target_dir, nii_path)
+        convert_to_nifti_new(target_dir, nii_path)
         print(f"[3/6] NIfTI 변환 완료 ({round(time.time() - t1, 2)}초)")
     else:
         print(f"[3/6] NIfTI 이미 존재: {nii_path}")

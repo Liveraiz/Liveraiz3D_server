@@ -11,3 +11,4 @@ pynrrd
 matplotlib
 scikit-image
 SimpleITK
+dicom2nifti
