@@ -8,6 +8,7 @@ import zipfile
 import logging
 import tempfile  
 from io import BytesIO
+from typing import Optional
 
 # Flask & Web 관련
 from flask import Flask, request, jsonify, send_file, send_from_directory, make_response, Response
@@ -67,8 +68,32 @@ def index():
 # Liver CT
 # INFERENCE_SERVER_URL = "http://localhost:8000/infer/liver_5sect_nnunet/"
 INFERENCE_SERVER_URL = os.getenv(
-    "INFERENCE_SERVER_URL", "https://smc-ssiso-ai.ngrok.app/infer/liver_5sect_nnunet/"
+    "INFERENCE_SERVER_URL", "https://smc-ssiso-ai.ngrok.app"
 )
+
+SEGMENTATION_MODEL_TO_PATH = {
+    "HCC-CT-PP30": "/infer/hcc_ct_pp30_nnunet/",
+    "HCC-MR20min": "/infer/hcc_mr20min_nnunet/",
+    "HCC-MRPP": "/infer/hcc_mrpp_nnunet/",
+    "LDLT-MRCP3Dgrase": "/infer/ldlt_mrcp3dgrase_nnunet/",
+    "LDLT-Recip70": "/infer/ldlt_recip70_nnunet/",
+    "PDAC-Pancreas": "/infer/pdac_pancreas_nnunet/",
+    "PS-Flap100": "/infer/ps_flap100_nnunet/",
+    "Kidney-CT-AP": "/infer/kidney_nnunet/",
+    "Liver-PV-5section": "/infer/liver_5sect_nnunet/",
+}
+
+
+def resolve_inference_url(segmentation_model: Optional[str]) -> str:
+    """UI 모델명으로 infer URL을 결정한다. 없거나 미지원 모델이면 기본 URL 사용."""
+    if not segmentation_model:
+        return INFERENCE_SERVER_URL + "/infer/liver_5sect_nnunet/"
+
+    infer_path = SEGMENTATION_MODEL_TO_PATH.get(segmentation_model)
+    if not infer_path:
+        return INFERENCE_SERVER_URL + "/infer/liver_5sect_nnunet/"
+
+    return f"{INFERENCE_SERVER_URL}{infer_path}"
 
 @app.route('/convert-mesh', methods=['OPTIONS', 'POST'])
 def convert_mesh():
@@ -308,6 +333,84 @@ def generate_mesh():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/infer-nifti-bundle", methods=["POST"])
+def infer_nifti_bundle():
+    start_time = time.time()
+    file = request.files.get("niftiFile")
+    if not file or not file.filename:
+        return jsonify({"success": False, "message": "NIfTI 파일이 없음"}), 400
+
+    segmentation_model = request.form.get("segmentationModel", "").strip() or None
+    infer_url = resolve_inference_url(segmentation_model)
+    logging.info(
+        "🧠 segmentationModel 수신: %s | infer URL 결정: %s",
+        segmentation_model if segmentation_model else "(없음)",
+        infer_url,
+    )
+    if segmentation_model and segmentation_model not in SEGMENTATION_MODEL_TO_PATH:
+        logging.warning("⚠ 미지원 segmentationModel='%s' - 기본 URL 사용", segmentation_model)
+
+    try:
+        nii_bytes = file.read()
+
+        # validate nii_bytes
+        if not nii_bytes or len(nii_bytes) == 0:
+            raise ValueError("변환된 NIfTI 데이터가 비정상적입니다.")
+
+        logging.info(
+            "📦 전송 준비 NIfTI: bytes=%.1fKB, md5=%s, gzip_magic=%s",
+            len(nii_bytes) / 1024,
+            hashlib.md5(nii_bytes).hexdigest(),
+            nii_bytes[:2].hex(),
+        )
+
+        logging.info(f"✅ NIfTI 변환 완료 ({len(nii_bytes) / 1024:.1f} KB)")
+    except Exception as e:
+        logging.exception("❌ NIfTI 변환 실패")
+        return jsonify({"success": False, "message": f"NIfTI 변환 실패: {str(e)}"}), 500
+
+    # 4. SMC 추론 요청
+    encoder = MultipartEncoder(
+        fields={"file": ("converted.nii.gz", BytesIO(nii_bytes), "application/octet-stream")}
+    )
+    monitor = MultipartEncoderMonitor(encoder, lambda m: None)
+    headers = {"Content-Type": monitor.content_type}
+
+    try:
+        logging.info("📡 SMC 서버로 추론 요청 시작")
+        smc_res = requests.post(
+            infer_url + "?output_format=.nrrd",
+            data=monitor,
+            headers=headers,
+            timeout=(30, 600),
+        )
+        elapsed = round(time.time() - start_time, 2)
+
+        if smc_res.status_code != 200:
+            logging.error(f"❌ SMC 서버 오류: {smc_res.status_code}, {smc_res.text}")
+            return jsonify({"success": False, "message": f"SMC 오류: {smc_res.text}", "elapsed": elapsed}), 500
+
+        logging.info(f"✅ SMC 응답 완료 ({len(smc_res.content) / 1024:.1f} KB), 처리시간: {elapsed}s")
+
+        # 5. zip 묶기
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.writestr("inferred.nrrd", smc_res.content)
+        zip_buffer.seek(0)
+
+        logging.info("📤 zip 파일 생성 및 클라이언트 응답")
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name="result_bundle.zip",
+        )
+
+    except Exception as e:
+        elapsed = round(time.time() - start_time, 2)
+        logging.exception("❌ SMC 요청 실패 예외 발생")
+        return jsonify({"success": False, "message": f"SMC 요청 실패: {str(e)}", "elapsed": elapsed}), 500
+
 @app.route("/infer-dicom-bundle", methods=["POST"])
 def infer_dicom_bundle():
     start_time = time.time()
@@ -356,10 +459,6 @@ def infer_dicom_bundle():
                     nii_bytes[:2].hex(),
                 )
 
-                # nii_bytes = convert_lps_to_ras_nii(nii_bytes)
-
-                # with open("test_data/original_lps.nii.gz", "rb") as f:
-                #     nii_bytes = f.read()
                 logging.info(f"✅ NIfTI 변환 완료 ({len(nii_bytes) / 1024:.1f} KB)")
             except Exception as e:
                 logging.exception("❌ NIfTI 변환 실패")
@@ -387,10 +486,8 @@ def infer_dicom_bundle():
                     return jsonify({"success": False, "message": f"SMC 오류: {smc_res.text}", "elapsed": elapsed}), 500
 
                 logging.info(f"✅ SMC 응답 완료 ({len(smc_res.content) / 1024:.1f} KB), 처리시간: {elapsed}s")
-                # converted_nrrd_rps = convert_nrrd_to_rps(smc_res.content)
 
                 # 5. zip 묶기
-
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                     zip_file.writestr("converted.nii.gz", nii_bytes)
